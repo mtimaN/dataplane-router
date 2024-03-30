@@ -9,6 +9,8 @@
 #define MAX_PACKET_LEN 1600
 #define ROUTER_NUM_INTERFACES 3
 
+#define MAX_RTABLE_LEN 100
+#define MAX_ARP_TABLE_LEN 100
 
 /*
  * @brief Sends a packet on a specific interface.

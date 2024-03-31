@@ -22,18 +22,28 @@ struct route_table_entry* get_best_route(uint32_t ip_dest)
 	/* Implement the LPM algorithm */
 	/* We can iterate through rtable for (int i = 0; i < rtable_len; i++). Entries in
 	 * the rtable are in network order already */
+	char debug_string[16];
+
 	int best_pos = -1;
 
 	int left = 0;
 	int right = rtable_len - 1;
 
+	inet_ntop(AF_INET, &ip_dest, debug_string, 16);
+	printf("Looking for IP: %s\n", debug_string);
 	while (left <= right) {
 		int mid = (left + right) / 2;
+		inet_ntop(AF_INET, &rtable[mid].prefix, debug_string, 16);
+		printf("Comparing: %s with ", debug_string);
+
+		int debug_int = ip_dest & rtable[mid].mask;
+		inet_ntop(AF_INET, &debug_int, debug_string, 16);
+		printf("%s\n", debug_string);
 
 		if (rtable[mid].prefix == (ip_dest & rtable[mid].mask)) {
 			best_pos = mid;
 			break;
-		} else if (ntohl(rtable[mid].prefix) > ntohl(ip_dest & rtable[mid].mask)) {
+		} else if (ntohl(rtable[mid].prefix) > ntohl(ip_dest)) {
 			right = mid - 1;
 		} else {
 			left = mid + 1;
@@ -81,7 +91,8 @@ int ip_compar(const void *ptr_e1, const void *ptr_e2)
 void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 {
 	struct iphdr *ip_hdr = (struct iphdr *)((char *)eth_hdr + sizeof(*eth_hdr));
-	uint32_t my_ip = ipaddr_aton(get_interface_ip(interface));
+	int my_ip;
+	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
 
 	uint16_t check = ntohs(ip_hdr->check);
 	ip_hdr->check = 0;
@@ -119,16 +130,22 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 			return;
 		}
 
+		struct arp_table_entry *dest_mac = get_arp_entry(best_route->next_hop);
+		memcpy(eth_hdr->ether_dhost, dest_mac->mac, 6);
+
 		/* Update checksum */	
 		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr)));
-
-		struct arp_table_entry *mac = get_arp_entry(ip_hdr->daddr);
-		memcpy(eth_hdr->ether_dhost, mac->mac, 6);
 
 		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
 		send_to_link(best_route->interface, (char *)eth_hdr, len);
 	}
 
+}
+
+void receive_arp_request(struct ether_header *eth_hdr, int interface, size_t len)
+{
+	// TODO
+	return;
 }
 
 int main(int argc, char *argv[])
@@ -159,7 +176,6 @@ int main(int argc, char *argv[])
 
 		interface = recv_from_any_link(buf, &len);
 		DIE(interface < 0, "recv_from_any_links");
-		// printf("We have received a packet\n");
 
 		struct ether_header *eth_hdr = (struct ether_header *) buf;
 
@@ -172,8 +188,10 @@ int main(int argc, char *argv[])
 		if (eth_hdr->ether_type == ntohs(ETHERTYPE_IP)) {
 			receive_ip_packet(eth_hdr, interface, len);
 			continue;
+		} else if (eth_hdr->ether_type == ntohs(ETHERTYPE_ARP)) {
+			receive_arp_request(eth_hdr, interface, len);
 		} else {
-			printf("Invalid ethertype\n");
+			printf("Invalid ETHERTYPE\n");
 		}
 	}
 }

@@ -180,7 +180,7 @@ class FullNM(object):
             with os.fdopen(fd, "w") as tmp:
                 tmp.writelines(lines)
 
-            shutil.copy(path, "/etc/hosts")
+            shutil.copyfile(path, "/etc/hosts")
         finally:
             os.remove(path)
 

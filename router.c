@@ -77,6 +77,7 @@ int main(int argc, char *argv[])
 
 		struct ether_header *eth_hdr = (struct ether_header *) buf;
 		struct iphdr *ip_hdr = (struct iphdr *)(buf + sizeof(struct ether_header));
+
 		/* Note that packets received are in network order,
 		any header field which has more than 1 byte will need to be connected to
 		host order. For example, ntohs(eth_hdr->ether_type). The opposite is needed when
@@ -120,4 +121,3 @@ int main(int argc, char *argv[])
 		send_to_link(best_route->interface, buf, len);
 	}
 }
-

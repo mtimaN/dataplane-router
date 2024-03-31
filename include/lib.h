@@ -65,6 +65,7 @@ void get_interface_mac(int interface, uint8_t *mac);
  * @param argc
  * @param argv
  */
+void init(int argc, char *argv[]);
 
 /**
  * @brief IPv4 checksum per  RFC 791. To compute the checksum
@@ -86,6 +87,14 @@ uint16_t checksum(uint16_t *data, size_t length);
  */
 int hwaddr_aton(const char *txt, uint8_t *addr);
 
+/**
+ * @brief converts ASCII string to IP
+ * Note: it doesn't check for validity
+ * @param txt the IP as a string
+ * @return uint32_t the IP
+ */
+uint32_t ipaddr_aton(const char *txt);
+
 /* Populates a route table from file, rtable should be allocated
  * e.g. rtable = malloc(sizeof(struct route_table_entry) * 80000);
  * This function returns the size of the route table.
@@ -97,8 +106,6 @@ int read_rtable(const char *path, struct route_table_entry *rtable);
  * function returns the size of the arp table.
  * */
 int parse_arp_table(char *path, struct arp_table_entry *arp_table);
-
-void init(int argc, char *argv[]);
 
 #define DIE(condition, message, ...) \
 	do { \

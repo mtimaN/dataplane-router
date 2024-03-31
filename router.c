@@ -22,16 +22,33 @@ struct route_table_entry* get_best_route(uint32_t ip_dest)
 	/* Implement the LPM algorithm */
 	/* We can iterate through rtable for (int i = 0; i < rtable_len; i++). Entries in
 	 * the rtable are in network order already */
-	struct route_table_entry* best_entry = NULL;
+	int best_pos = -1;
 
-	for (int i = 0; i < rtable_len; ++i) {
-		if (rtable[i].prefix == (ip_dest & rtable[i].mask) &&
-			(best_entry == NULL || best_entry->prefix < rtable[i].prefix)) {
-			best_entry = &rtable[i];
+	int left = 0;
+	int right = rtable_len - 1;
+
+	while (left <= right) {
+		int mid = (left + right) / 2;
+
+		if (rtable[mid].prefix == (ip_dest & rtable[mid].mask)) {
+			best_pos = mid;
+			break;
+		} else if (ntohl(rtable[mid].prefix) > ntohl(ip_dest & rtable[mid].mask)) {
+			right = mid - 1;
+		} else {
+			left = mid + 1;
 		}
 	}
 
-	return best_entry;
+	if (best_pos == -1) {
+		return NULL;
+	}
+
+	while (best_pos < rtable_len - 2 && rtable[best_pos + 1].prefix == (ip_dest & rtable[best_pos + 1].mask)) {
+		best_pos++;
+	}
+
+	return &rtable[best_pos];
 }
 
 
@@ -49,6 +66,71 @@ struct arp_table_entry *get_arp_entry(uint32_t given_ip) {
 	return NULL;
 }
 
+int ip_compar(const void *ptr_e1, const void *ptr_e2)
+{
+	const struct route_table_entry e1 = *(struct route_table_entry*)ptr_e1;
+	const struct route_table_entry e2 = *(struct route_table_entry*)ptr_e2;
+
+	if (e1.prefix == e2.prefix) {
+		return (ntohl(e1.mask) > ntohl(e2.mask)) - (ntohl(e1.mask) < ntohl(e2.mask));
+	}
+
+	return (ntohl(e1.prefix) > ntohl(e2.prefix)) - (ntohl(e1.prefix) < ntohl(e2.prefix));
+}
+
+void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
+{
+	struct iphdr *ip_hdr = (struct iphdr *)((char *)eth_hdr + sizeof(*eth_hdr));
+	uint32_t my_ip = ipaddr_aton(get_interface_ip(interface));
+
+	uint16_t check = ntohs(ip_hdr->check);
+	ip_hdr->check = 0;
+    uint16_t sum = checksum((uint16_t*)ip_hdr, sizeof(struct iphdr));
+	if (sum != check) {
+		printf("Dropped corrupted packet\n");
+		return;
+	}
+
+	/* Check TTL >= 1. Update TLL. */
+	if (ip_hdr->ttl < 1) {
+		printf("TTL = 0; dropping packet\n");
+		return;
+	}
+
+	ip_hdr->ttl--;
+
+	if (ip_hdr->daddr == my_ip) {
+		// responding to ICMP echo request
+
+		struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
+
+		icmp_hdr->type = 0;
+		icmp_hdr->code = 0;
+
+		// TODO
+		printf("Packet drop cause of unfilled TODO");
+	} else {
+		// forwarding
+		/* Call get_best_route to find the most specific route, continue; (drop) if null */
+		struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
+
+		if (best_route == NULL) {
+			printf("No route found\n");
+			return;
+		}
+
+		/* Update checksum */	
+		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr)));
+
+		struct arp_table_entry *mac = get_arp_entry(ip_hdr->daddr);
+		memcpy(eth_hdr->ether_dhost, mac->mac, 6);
+
+		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
+		send_to_link(best_route->interface, (char *)eth_hdr, len);
+	}
+
+}
+
 int main(int argc, char *argv[])
 {
 	char buf[MAX_PACKET_LEN];
@@ -64,6 +146,10 @@ int main(int argc, char *argv[])
 	DIE(arp_table == NULL, "malloc failed");
 
 	rtable_len = read_rtable(argv[1], rtable);
+
+	// sorting the rtable for binary searching the IPs
+	qsort(rtable, rtable_len, sizeof(struct route_table_entry), ip_compar);
+
 	arp_table_len = parse_arp_table("arp_table.txt", arp_table);
 
 	while (1) {
@@ -73,10 +159,9 @@ int main(int argc, char *argv[])
 
 		interface = recv_from_any_link(buf, &len);
 		DIE(interface < 0, "recv_from_any_links");
-		printf("We have received a packet\n");
+		// printf("We have received a packet\n");
 
 		struct ether_header *eth_hdr = (struct ether_header *) buf;
-		struct iphdr *ip_hdr = (struct iphdr *)(buf + sizeof(struct ether_header));
 
 		/* Note that packets received are in network order,
 		any header field which has more than 1 byte will need to be connected to
@@ -84,40 +169,11 @@ int main(int argc, char *argv[])
 		sending a packet on the link, */
 
 		/* Check if we got an IPv4 packet */
-		if (eth_hdr->ether_type != ntohs(ETHERTYPE_IP)) {
-			printf("Ignored non-IPv4 packet\n");
+		if (eth_hdr->ether_type == ntohs(ETHERTYPE_IP)) {
+			receive_ip_packet(eth_hdr, interface, len);
 			continue;
+		} else {
+			printf("Invalid ethertype\n");
 		}
-
-		uint16_t check = ntohs(ip_hdr->check);
-		ip_hdr->check = 0;
-        uint16_t sum = checksum((uint16_t*)ip_hdr, sizeof(struct iphdr));
-		if (sum != check) {
-			printf("Dropped corrupted packet\n");
-			continue;
-		}
-
-		/* Call get_best_route to find the most specific route, continue; (drop) if null */
-		struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
-
-		if (best_route == NULL) {
-			printf("No route found\n");
-			continue;
-		}
-	
-		/* Check TTL >= 1. Update TLL. Update checksum  */
-		if (ip_hdr->ttl < 1) {
-			printf("TTL = 0; dropping packet\n");
-			continue;
-		}
-
-		ip_hdr->ttl--;
-		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr)));
-
-		struct arp_table_entry *mac = get_arp_entry(ip_hdr->daddr);
-		memcpy(eth_hdr->ether_dhost, mac->mac, 6);
-
-		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
-		send_to_link(best_route->interface, buf, len);
 	}
 }

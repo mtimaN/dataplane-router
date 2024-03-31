@@ -170,6 +170,26 @@ int hwaddr_aton(const char *txt, uint8_t *addr)
 	return 0;
 }
 
+uint32_t ipaddr_aton(const char *txt)
+{
+	// 192.255.255.255
+	// 012345678901234 <- 15 characters, at most
+	char *txt_copy = calloc(16, sizeof(char));
+	strncpy(txt_copy, txt, 15);
+	char *p = strtok(txt_copy, ".");
+	uint32_t addr;
+
+	while (p) {
+		int val = atoi(p);
+		addr += val;
+		addr <<= 2;
+
+		p = strtok(NULL, ".");
+	}
+
+	return addr;
+}
+
 void init(int argc, char *argv[])
 {
 	for (int i = 0; i < argc; ++i) {
@@ -177,7 +197,6 @@ void init(int argc, char *argv[])
 		interfaces[i] = get_sock(argv[i]);
 	}
 }
-
 
 uint16_t checksum(uint16_t *data, size_t length)
 {

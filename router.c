@@ -110,7 +110,7 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 	ip_hdr->ttl--;
 
-	if (ip_hdr->daddr == my_ip) {
+	if (ip_hdr->daddr == htons(my_ip)) {
 		// responding to ICMP echo request
 
 		struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
@@ -126,17 +126,67 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
 
 		if (best_route == NULL) {
+			// destination unreachable
 			printf("No route found\n");
+			char packet[sizeof(struct ether_header) +
+						sizeof(struct iphdr) +
+						sizeof(struct icmphdr) + 64];
+			memset(packet, 0, sizeof(packet));
+
+			// ethernet
+			struct ether_header *new_eth = (struct ether_header *)packet;
+
+			// give the frame back
+			memcpy(new_eth->ether_dhost, eth_hdr->ether_shost, 6);
+			get_interface_mac(interface, new_eth->ether_shost);
+
+			new_eth->ether_type = htons(ETHERTYPE_IP);
+
+			// ip
+			struct iphdr *new_ip = (struct iphdr *)((char *)new_eth + sizeof(*new_eth));
+			new_ip->version = 4;
+			new_ip->ihl = 5;
+			new_ip->tos = 0;
+			new_ip->tot_len = htons((sizeof(struct iphdr) + sizeof(struct icmphdr) + 64));
+			new_ip->id = htons(1);
+			new_ip->frag_off = htons(0);
+			new_ip->ttl = 64;
+			new_ip->protocol = 0x01; // ICMP protocol number
+			new_ip->daddr = ip_hdr->saddr;
+			new_ip->saddr = htonl(my_ip);
+			new_ip->check = 0;
+			// the ICMP is sent to the old sender
+			new_ip->daddr = ip_hdr->saddr;
+			new_ip->check = htons(checksum((uint16_t *)new_ip, sizeof(*new_ip)));
+
+			// icmp
+			struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)new_ip + sizeof(*new_ip));
+			icmp_hdr->code = 0;
+			icmp_hdr->type = 3;
+			icmp_hdr->checksum = 0;
+			icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
+
+
+			char *payload = (char *)icmp_hdr + sizeof(*icmp_hdr);
+			char *old_payload = (char *)ip_hdr + sizeof(*ip_hdr) + sizeof(*icmp_hdr);
+			memcpy(payload, old_payload, 64);
+
+			const int packet_len = sizeof(struct ether_header) +
+						sizeof(struct iphdr) +
+						sizeof(struct icmphdr) + 64;
+			printf("%d", packet_len);
+			send_to_link(interface, packet, packet_len);
 			return;
 		}
 
+		// update L2 src and dest
 		struct arp_table_entry *dest_mac = get_arp_entry(best_route->next_hop);
 		memcpy(eth_hdr->ether_dhost, dest_mac->mac, 6);
+		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
 
 		/* Update checksum */	
 		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr)));
 
-		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
 		send_to_link(best_route->interface, (char *)eth_hdr, len);
 	}
 

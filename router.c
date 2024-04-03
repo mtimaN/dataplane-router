@@ -30,16 +30,16 @@ struct route_table_entry* get_best_route(uint32_t ip_dest)
 	int right = rtable_len - 1;
 
 	inet_ntop(AF_INET, &ip_dest, debug_string, 16);
+	printf("Looking for next hop to: %s\n", debug_string);
+
 	while (left <= right) {
 		int mid = (left + right) / 2;
+
 		inet_ntop(AF_INET, &rtable[mid].prefix, debug_string, 16);
-
-		int debug_int = ip_dest & rtable[mid].mask;
-		inet_ntop(AF_INET, &debug_int, debug_string, 16);
-
+		printf("Checking prefix %s\n", debug_string);
 		if (rtable[mid].prefix == (ip_dest & rtable[mid].mask)) {
 			best_pos = mid;
-			break;
+			left = mid + 1;
 		} else if (ntohl(rtable[mid].prefix) > ntohl(ip_dest)) {
 			right = mid - 1;
 		} else {
@@ -60,7 +60,7 @@ struct route_table_entry* get_best_route(uint32_t ip_dest)
 
 
 struct arp_table_entry *get_arp_entry(uint32_t given_ip) {
-	/* TODO 2.4: Iterate through the MAC table and search for an entry
+	/* Iterate through the MAC table and search for an entry
 	 * that matches given_ip. */
 
 	/* We can iterate through the arp_table for (int i = 0; i <
@@ -134,7 +134,6 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	const int packet_len = sizeof(struct ether_header) +
 	sizeof(struct iphdr) +
 	sizeof(struct icmphdr) + 64;
-	printf("%d", packet_len);
 	send_to_link(interface, packet, packet_len);
 }
 
@@ -160,10 +159,8 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	}
 
 	ip_hdr->ttl--;
-
 	if (ip_hdr->daddr == my_ip) {
 		// responding to ICMP echo request
-
 		struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
 
 		// swap source and destination
@@ -199,20 +196,23 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 		// update L2 src and dest
 		struct arp_table_entry *dest_mac = get_arp_entry(best_route->next_hop);
-		memcpy(eth_hdr->ether_dhost, dest_mac->mac, 6);
+		memcpy(eth_hdr->ether_dhost, dest_mac->mac, sizeof(dest_mac->mac));
 		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
 
 		/* Update checksum */	
 		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(struct iphdr)));
 
+		char debug_string[16];
+
+		inet_ntop(AF_INET, &best_route->next_hop, debug_string, 16);
+		printf("Sending to %s\n", debug_string);
 		send_to_link(best_route->interface, (char *)eth_hdr, len);
 	}
-
 }
 
 void receive_arp_request(struct ether_header *eth_hdr, int interface, size_t len)
 {
-	// TODO
+
 	return;
 }
 

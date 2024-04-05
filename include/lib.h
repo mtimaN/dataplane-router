@@ -10,14 +10,14 @@
 #define ROUTER_NUM_INTERFACES 3
 
 #define MAX_RTABLE_LEN 65000
-#define MAX_ARP_TABLE_LEN 65000
+#define MAX_ARP_TABLE_LEN 10
 
 
 struct arp_queue_entry {
 	char *buffer;
 	int interface;
 	size_t len;
-} __attribute__((packed));
+};
 /*
  * @brief Sends a packet on a specific interface.
  *

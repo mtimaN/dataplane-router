@@ -136,14 +136,17 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	const int packet_len = sizeof(struct ether_header) +
 	sizeof(struct iphdr) +
 	sizeof(struct icmphdr) + 8;
+
+	printf("Sending ICMP\n");
 	send_to_link(interface, packet, packet_len);
 }
 
 void broadcast_arp_request(int interface, uint32_t ip, uint32_t source_ip)
 {
-	char *buffer = malloc(sizeof(struct ehter_header *) + sizeof(struct arp_header *));
+	char *buffer = malloc(sizeof(struct ether_header) + sizeof(struct arp_header));
 	struct ether_header *eth_hdr = (struct ether_header *)buffer;
 
+	eth_hdr->ether_type = htons(ETHERTYPE_ARP);
 	get_interface_mac(interface, eth_hdr->ether_shost);
 	memset(eth_hdr->ether_dhost, 0xff, 6);
 
@@ -161,7 +164,8 @@ void broadcast_arp_request(int interface, uint32_t ip, uint32_t source_ip)
 
 	for (int i = 0; i < ROUTER_NUM_INTERFACES; ++i) {
 		if (i != interface) {
-			send_to_link(i, buffer, sizeof(buffer));
+			printf("Broadcasting ARP REQUEST to %d\n", i);
+			send_to_link(i, buffer, sizeof(*eth_hdr) + sizeof(*arp_hdr));
 		}
 	}
 	free(buffer);
@@ -172,7 +176,8 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	struct iphdr *ip_hdr = (struct iphdr *)((char *)eth_hdr + sizeof(*eth_hdr));
 	uint32_t my_ip;
 	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
-
+	char debug_string[16];
+	printf("My ip: %s\n", get_interface_ip(interface));
 	uint16_t check = ntohs(ip_hdr->check);
 	ip_hdr->check = 0;
     uint16_t sum = checksum((uint16_t*)ip_hdr, sizeof(struct iphdr));
@@ -199,9 +204,9 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 		// swap source and destination
 		char buffer[6];
-		memcpy(buffer, eth_hdr->ether_dhost, 6);
-		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, 6);
-		memcpy(eth_hdr->ether_shost, buffer, 6);
+		memcpy(buffer, eth_hdr->ether_dhost, sizeof(buffer));
+		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
+		memcpy(eth_hdr->ether_shost, buffer, sizeof(eth_hdr->ether_shost));
 
 		ip_hdr->daddr = ip_hdr->saddr; 
 		ip_hdr->saddr = my_ip;
@@ -214,11 +219,12 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		icmp_hdr->checksum = 0;
 		icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
 
+		printf("Sending ICMP echo request\n");
 		send_to_link(interface, (char *)eth_hdr, len);
 		return;
 	} else {
 		// forwarding
-		/* Call get_best_route to find the most specific route, continue; (drop) if null */
+		/* Call get_best_route to find the most specific route */
 		struct route_table_entry *best_route = get_best_route(ip_hdr->daddr);
 
 		if (best_route == NULL) {
@@ -237,19 +243,19 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		if (dest_mac == NULL) {
 			// send ARP request
 			struct arp_queue_entry *entry = malloc(sizeof(*entry));
-			entry->buffer = (char *)eth_hdr;
+			entry->buffer = malloc(len);
+			memcpy(entry->buffer, eth_hdr, len);
 			entry->interface = best_route->interface;
 			entry->len = len;
 			queue_enq(arp_queue, entry);
 
+			inet_ntop(AF_INET, &ip_hdr->daddr, debug_string, sizeof(debug_string));
+			printf("DADDR: %s\n", debug_string);	
 			broadcast_arp_request(interface, best_route->next_hop, my_ip);
 			return;
 		}
 
 		memcpy(eth_hdr->ether_dhost, dest_mac->mac, sizeof(dest_mac->mac));
-
-
-		char debug_string[16];
 
 		inet_ntop(AF_INET, &best_route->next_hop, debug_string, sizeof(debug_string));
 		printf("Sending to %s\n", debug_string);
@@ -260,34 +266,82 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 {
 	struct arp_header *arp_hdr = (struct arp_header *)((char *)eth_hdr + sizeof(*eth_hdr));
+	uint32_t my_ip;
+	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
 
-	if (ntohs(arp_hdr->op) == 1) {
+	char debug_string[16];
+	inet_ntop(AF_INET, &my_ip, debug_string, 16);
+	printf("My ip: %s\n", debug_string);
+	inet_ntop(AF_INET, &arp_hdr->tpa, debug_string, 16);
+	printf("Target: %s\n", debug_string);
+
+	if (ntohs(arp_hdr->op) == 1 && arp_hdr->tpa == my_ip) {
 		// REQUEST
-		printf("TODO");
-		return;
+		// swap source and destination
+		char buffer[6];
+		memcpy(buffer, eth_hdr->ether_dhost, sizeof(buffer));
+		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
+		memcpy(eth_hdr->ether_shost, buffer, sizeof(eth_hdr->ether_shost));
+
+		arp_hdr->op = 2;
+
+		memcpy(arp_hdr->tha, eth_hdr->ether_dhost, sizeof(arp_hdr->tha));
+		arp_hdr->tpa = arp_hdr->spa;
+
+		memcpy(arp_hdr->sha, eth_hdr->ether_shost, sizeof(arp_hdr->sha));
+		arp_hdr->spa = my_ip;
+
+		printf("Sending ARP REPLY\n");
+		send_to_link(interface, (char *)eth_hdr, len);
 	} else if (ntohs(arp_hdr->op) == 2) {
 		// REPLY
 
+		char debug_string[16];
+		if (queue_empty(arp_queue)) {
+			// DROP packet
+			printf("Empty q, dropped packet\n");
+			return;
+		}
+
+		printf("q NOT EMPTY\n");
 		struct arp_queue_entry *entry = queue_deq(arp_queue);
 		struct ether_header *queued_hdr = (struct ether_header *)entry->buffer;
-		struct arp_header *queued_arp = (struct arp_header *)((char *)queued_hdr + sizeof(*queued_hdr));
+		struct iphdr *queued_ip_hdr = (struct iphdr *)((char *)queued_hdr + sizeof(*queued_hdr));
 
 		int i = 0;
 
-		while (++i < 10 && queued_arp->tpa != arp_hdr->tpa) {
+		while (++i < 10 && queued_ip_hdr->daddr != arp_hdr->spa) {
+
+			// DEBUG
+			uint32_t debug_int = queued_ip_hdr->daddr;
+			inet_ntop(AF_INET, &debug_int, debug_string, sizeof(debug_string));
+			printf("%s is not", debug_string);
+			inet_ntop(AF_INET, &arp_hdr->spa, debug_string, sizeof(debug_string));
+			printf(" %s\n", debug_string);
+
+			// /DEBUG
+
 			queue_enq(arp_queue, entry);
 			entry = queue_deq(arp_queue);
 			queued_hdr = (struct ether_header *)entry->buffer;
-			queued_arp = (struct arp_header *)((char *)queued_hdr + sizeof(*queued_hdr));
+			queued_ip_hdr = (struct iphdr *)((char *)queued_hdr + sizeof(*queued_hdr));
 		}
 
 		if (i == 10) {
 			printf("Invalid ARP reply\n");
+			queue_enq(arp_queue, entry);
 			return;
 		}
 
-		memcpy(queued_hdr->ether_dhost, arp_hdr->tha, sizeof(arp_hdr->tha));
+		// add to ARP table
+		memcpy(arp_table[arp_table_len].mac, arp_hdr->sha, sizeof(arp_hdr->sha));
+		arp_table[arp_table_len++].ip = arp_hdr->spa;
+
+		memcpy(queued_hdr->ether_dhost, arp_hdr->sha, sizeof(arp_hdr->sha));
+		printf("Sending QUEUED PACKET\n");
 		send_to_link(entry->interface, entry->buffer, entry->len);
+		free(entry->buffer);
+		free(entry);
 	}
 }
 
@@ -310,8 +364,6 @@ int main(int argc, char *argv[])
 
 	// sorting the rtable for binary searching the IPs
 	qsort(rtable, rtable_len, sizeof(struct route_table_entry), ip_compar);
-
-	// arp_table_len = parse_arp_table("arp_table.txt", arp_table);
 
 	while (1) {
 

@@ -108,7 +108,7 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
 
 
-	printf("Sending ICMP echo reply\n");
+	printf("Sending ICMP\n");
 	send_to_link(interface, (char *)eth_hdr, len);
 	return;
 }

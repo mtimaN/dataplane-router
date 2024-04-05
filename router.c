@@ -80,53 +80,37 @@ int ip_compar(const void *ptr_e1, const void *ptr_e2)
 void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 {
 	struct iphdr *ip_hdr = (struct iphdr *)((char *)eth_hdr + sizeof(*eth_hdr));
+	struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
+	size_t len = sizeof(*eth_hdr) + sizeof(*ip_hdr) + sizeof(*icmp_hdr);
+	if (type == 11 || type == 3) {
+		len += 8;
+	}
 
-	char packet[sizeof(struct ether_header) +
-	sizeof(struct iphdr) +
-	sizeof(struct icmphdr) + 8];
-	memset(packet, 0, sizeof(packet));
+	// swap source and destination
+	char buffer[6];
+	memcpy(buffer, eth_hdr->ether_dhost, sizeof(buffer));
+	memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
+	memcpy(eth_hdr->ether_shost, buffer, sizeof(eth_hdr->ether_shost));
 
-	// ethernet
-	struct ether_header *new_eth = (struct ether_header *)packet;
+	ip_hdr->daddr = ip_hdr->saddr; 
+	ip_hdr->saddr = my_ip;
+	ip_hdr->ttl = 64;
+	ip_hdr->check = 0;
+	ip_hdr->protocol = 0x01; // ICMP protocol number
+	ip_hdr->tot_len = htons(len);
+	ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(*ip_hdr)));
+	ip_hdr->frag_off = 0;
+	ip_hdr->id = htons(1);
 
-	// give the frame back
-	memcpy(new_eth->ether_dhost, eth_hdr->ether_shost, 6);
-	get_interface_mac(interface, new_eth->ether_shost);
-
-	new_eth->ether_type = htons(ETHERTYPE_IP);
-
-	// ip
-	struct iphdr *new_ip = (struct iphdr *)((char *)new_eth + sizeof(*new_eth));
-	new_ip->version = 4;
-	new_ip->ihl = 5;
-	new_ip->tos = 0;
-	new_ip->tot_len = htons((sizeof(struct iphdr) + sizeof(struct icmphdr) + 64));
-	new_ip->id = htons(1);
-	new_ip->frag_off = htons(0);
-	new_ip->ttl = 64;
-	new_ip->protocol = 0x01; // ICMP protocol number
-	// the ICMP is sent to the old sender
-	new_ip->daddr = ip_hdr->saddr;
-	new_ip->saddr = my_ip;
-	new_ip->check = 0;
-	new_ip->check = htons(checksum((uint16_t *)new_ip, sizeof(*new_ip)));
-
-	// icmp
-	struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)new_ip + sizeof(*new_ip));
-	icmp_hdr->code = 0;
 	icmp_hdr->type = type;
+	icmp_hdr->code = 0;
 	icmp_hdr->checksum = 0;
+	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
 
-	char *payload = (char *)icmp_hdr + sizeof(*icmp_hdr);
-	char *old_payload = (char *)ip_hdr + sizeof(*ip_hdr) + sizeof(*icmp_hdr);
-	memcpy(payload, old_payload, 8);
 
-	const int packet_len = sizeof(struct ether_header) +
-	sizeof(struct iphdr) +
-	sizeof(struct icmphdr) + 8;
-
-	printf("Sending ICMP\n");
-	send_to_link(interface, packet, packet_len);
+	printf("Sending ICMP echo reply\n");
+	send_to_link(interface, (char *)eth_hdr, len);
+	return;
 }
 
 void broadcast_arp_request(struct route_table_entry *route)
@@ -182,29 +166,7 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 	if (ip_hdr->daddr == my_ip) {
 		// responding to ICMP echo request
-		printf("I got PINGED\n");
-		struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
-
-		// swap source and destination
-		char buffer[6];
-		memcpy(buffer, eth_hdr->ether_dhost, sizeof(buffer));
-		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
-		memcpy(eth_hdr->ether_shost, buffer, sizeof(eth_hdr->ether_shost));
-
-		ip_hdr->daddr = ip_hdr->saddr; 
-		ip_hdr->saddr = my_ip;
-		ip_hdr->ttl = 64;
-		ip_hdr->check = 0;
-		ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(*ip_hdr)));
-
-		icmp_hdr->type = 0;
-		icmp_hdr->code = 0;
-		icmp_hdr->checksum = 0;
-		icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
-
-		printf("Sending ICMP echo reply\n");
-		send_to_link(interface, (char *)eth_hdr, len);
-		return;
+		send_icmp(eth_hdr, interface, my_ip, 0);
 	} else {
 		// forwarding
 		/* Call get_best_route to find the most specific route */

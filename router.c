@@ -98,9 +98,9 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	ip_hdr->check = 0;
 	ip_hdr->protocol = 0x01; // ICMP protocol number
 	ip_hdr->tot_len = htons(len);
-	ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(*ip_hdr)));
 	ip_hdr->frag_off = 0;
 	ip_hdr->id = htons(1);
+	ip_hdr->check = htons(checksum((uint16_t *)ip_hdr, sizeof(*ip_hdr)));
 
 	icmp_hdr->type = type;
 	icmp_hdr->code = 0;

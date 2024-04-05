@@ -21,24 +21,14 @@ queue arp_queue;
 
 struct route_table_entry* get_best_route(uint32_t ip_dest)
 {
-	/* Implement the LPM algorithm */
-	/* We can iterate through rtable for (int i = 0; i < rtable_len; i++). Entries in
-	 * the rtable are in network order already */
-	char debug_string[16];
-
 	int best_pos = -1;
 
 	int left = 0;
 	int right = rtable_len - 1;
 
-	inet_ntop(AF_INET, &ip_dest, debug_string, 16);
-	printf("Looking for next hop to: %s\n", debug_string);
-
 	while (left <= right) {
 		int mid = (left + right) / 2;
 
-		inet_ntop(AF_INET, &rtable[mid].prefix, debug_string, 16);
-		printf("Checking prefix %s\n", debug_string);
 		if (rtable[mid].prefix == (ip_dest & rtable[mid].mask)) {
 			best_pos = mid;
 			left = mid + 1;
@@ -126,8 +116,6 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	icmp_hdr->code = 0;
 	icmp_hdr->type = type;
 	icmp_hdr->checksum = 0;
-	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
-
 
 	char *payload = (char *)icmp_hdr + sizeof(*icmp_hdr);
 	char *old_payload = (char *)ip_hdr + sizeof(*ip_hdr) + sizeof(*icmp_hdr);
@@ -141,14 +129,14 @@ void send_icmp(struct ether_header *eth_hdr, int interface, int my_ip, int type)
 	send_to_link(interface, packet, packet_len);
 }
 
-void broadcast_arp_request(int interface, uint32_t ip, uint32_t source_ip)
+void broadcast_arp_request(struct route_table_entry *route)
 {
 	char *buffer = malloc(sizeof(struct ether_header) + sizeof(struct arp_header));
 	struct ether_header *eth_hdr = (struct ether_header *)buffer;
 
 	eth_hdr->ether_type = htons(ETHERTYPE_ARP);
-	get_interface_mac(interface, eth_hdr->ether_shost);
-	memset(eth_hdr->ether_dhost, 0xff, 6);
+	get_interface_mac(route->interface, eth_hdr->ether_shost);
+	memset(eth_hdr->ether_dhost, 0xff, sizeof(eth_hdr->ether_dhost));
 
 	struct arp_header *arp_hdr = (struct arp_header *)((char *)eth_hdr + sizeof(*eth_hdr));
 	arp_hdr->htype = htons(1);
@@ -156,18 +144,13 @@ void broadcast_arp_request(int interface, uint32_t ip, uint32_t source_ip)
 	arp_hdr->hlen = 6;
 	arp_hdr->plen = 4;
 	arp_hdr->op = htons(1);
-	memcpy(arp_hdr->sha, eth_hdr->ether_shost, 6);
-	arp_hdr->spa = source_ip;
+	memcpy(arp_hdr->sha, eth_hdr->ether_shost, sizeof(arp_hdr->sha));
+	arp_hdr->spa = inet_addr(get_interface_ip(route->interface));
 	
-	memset(arp_hdr->tha, 0, 6);
-	arp_hdr->tpa = ip;
+	memset(arp_hdr->tha, 0, sizeof(arp_hdr->tha));
+	arp_hdr->tpa = route->next_hop;
 
-	for (int i = 0; i < ROUTER_NUM_INTERFACES; ++i) {
-		if (i != interface) {
-			printf("Broadcasting ARP REQUEST to %d\n", i);
-			send_to_link(i, buffer, sizeof(*eth_hdr) + sizeof(*arp_hdr));
-		}
-	}
+	send_to_link(route->interface, buffer, sizeof(*eth_hdr) + sizeof(*arp_hdr));
 	free(buffer);
 }
 
@@ -177,7 +160,7 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	uint32_t my_ip;
 	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
 	char debug_string[16];
-	printf("My ip: %s\n", get_interface_ip(interface));
+
 	uint16_t check = ntohs(ip_hdr->check);
 	ip_hdr->check = 0;
     uint16_t sum = checksum((uint16_t*)ip_hdr, sizeof(struct iphdr));
@@ -200,6 +183,7 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 	if (ip_hdr->daddr == my_ip) {
 		// responding to ICMP echo request
+		printf("I got PINGED\n");
 		struct icmphdr *icmp_hdr = (struct icmphdr *)((char *)ip_hdr + sizeof(*ip_hdr));
 
 		// swap source and destination
@@ -219,7 +203,7 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		icmp_hdr->checksum = 0;
 		icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, sizeof(*icmp_hdr)));
 
-		printf("Sending ICMP echo request\n");
+		printf("Sending ICMP echo reply\n");
 		send_to_link(interface, (char *)eth_hdr, len);
 		return;
 	} else {
@@ -234,7 +218,6 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 			return;
 		}
 
-
 		get_interface_mac(best_route->interface, eth_hdr->ether_shost);
 
 		// update L2 src and dest
@@ -245,13 +228,11 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 			struct arp_queue_entry *entry = malloc(sizeof(*entry));
 			entry->buffer = malloc(len);
 			memcpy(entry->buffer, eth_hdr, len);
-			entry->interface = best_route->interface;
+			entry->next_route = best_route;
 			entry->len = len;
 			queue_enq(arp_queue, entry);
-
-			inet_ntop(AF_INET, &ip_hdr->daddr, debug_string, sizeof(debug_string));
-			printf("DADDR: %s\n", debug_string);	
-			broadcast_arp_request(interface, best_route->next_hop, my_ip);
+			printf("Interface: %d", best_route->interface);
+			broadcast_arp_request(best_route);
 			return;
 		}
 
@@ -269,21 +250,20 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	uint32_t my_ip;
 	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
 
-	char debug_string[16];
-	inet_ntop(AF_INET, &my_ip, debug_string, 16);
-	printf("My ip: %s\n", debug_string);
-	inet_ntop(AF_INET, &arp_hdr->tpa, debug_string, 16);
-	printf("Target: %s\n", debug_string);
-
 	if (ntohs(arp_hdr->op) == 1 && arp_hdr->tpa == my_ip) {
+		char debug_string[16];
+		uint32_t debug_int = ntohs(arp_hdr->tpa);
+		inet_ntop(AF_INET, &my_ip, debug_string, sizeof(debug_string));
+		printf("My ip: %s\n", debug_string);
+		inet_ntop(AF_INET, &arp_hdr->tpa, debug_string, sizeof(debug_string));
+		printf("Target: %s\n", debug_string);
+		printf("Op: %d\n", ntohs(arp_hdr->op));
 		// REQUEST
-		// swap source and destination
-		char buffer[6];
-		memcpy(buffer, eth_hdr->ether_dhost, sizeof(buffer));
+		printf("Request received\n");
 		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
-		memcpy(eth_hdr->ether_shost, buffer, sizeof(eth_hdr->ether_shost));
+		get_interface_mac(interface, eth_hdr->ether_shost);
 
-		arp_hdr->op = 2;
+		arp_hdr->op = htons(2);
 
 		memcpy(arp_hdr->tha, eth_hdr->ether_dhost, sizeof(arp_hdr->tha));
 		arp_hdr->tpa = arp_hdr->spa;
@@ -291,7 +271,6 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		memcpy(arp_hdr->sha, eth_hdr->ether_shost, sizeof(arp_hdr->sha));
 		arp_hdr->spa = my_ip;
 
-		printf("Sending ARP REPLY\n");
 		send_to_link(interface, (char *)eth_hdr, len);
 	} else if (ntohs(arp_hdr->op) == 2) {
 		// REPLY
@@ -305,26 +284,14 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 		printf("q NOT EMPTY\n");
 		struct arp_queue_entry *entry = queue_deq(arp_queue);
-		struct ether_header *queued_hdr = (struct ether_header *)entry->buffer;
-		struct iphdr *queued_ip_hdr = (struct iphdr *)((char *)queued_hdr + sizeof(*queued_hdr));
+		struct route_table_entry *next_route = entry->next_route;
 
 		int i = 0;
 
-		while (++i < 10 && queued_ip_hdr->daddr != arp_hdr->spa) {
-
-			// DEBUG
-			uint32_t debug_int = queued_ip_hdr->daddr;
-			inet_ntop(AF_INET, &debug_int, debug_string, sizeof(debug_string));
-			printf("%s is not", debug_string);
-			inet_ntop(AF_INET, &arp_hdr->spa, debug_string, sizeof(debug_string));
-			printf(" %s\n", debug_string);
-
-			// /DEBUG
-
+		while (++i < 10 && next_route->next_hop != arp_hdr->spa) {
 			queue_enq(arp_queue, entry);
 			entry = queue_deq(arp_queue);
-			queued_hdr = (struct ether_header *)entry->buffer;
-			queued_ip_hdr = (struct iphdr *)((char *)queued_hdr + sizeof(*queued_hdr));
+			next_route = entry->next_route;
 		}
 
 		if (i == 10) {
@@ -337,11 +304,14 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		memcpy(arp_table[arp_table_len].mac, arp_hdr->sha, sizeof(arp_hdr->sha));
 		arp_table[arp_table_len++].ip = arp_hdr->spa;
 
+		struct ether_header *queued_hdr = (struct ether_header *)entry->buffer;
 		memcpy(queued_hdr->ether_dhost, arp_hdr->sha, sizeof(arp_hdr->sha));
 		printf("Sending QUEUED PACKET\n");
-		send_to_link(entry->interface, entry->buffer, entry->len);
+		send_to_link(entry->next_route->interface, entry->buffer, entry->len);
 		free(entry->buffer);
 		free(entry);
+	} else {
+		printf("received redundant arp\n");
 	}
 }
 
@@ -364,6 +334,8 @@ int main(int argc, char *argv[])
 
 	// sorting the rtable for binary searching the IPs
 	qsort(rtable, rtable_len, sizeof(struct route_table_entry), ip_compar);
+
+	// arp_table_len = parse_arp_table("arp_table.txt", arp_table);
 
 	while (1) {
 

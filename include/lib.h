@@ -15,7 +15,7 @@
 
 struct arp_queue_entry {
 	char *buffer;
-	int interface;
+	struct route_table_entry *next_route;
 	size_t len;
 };
 /*

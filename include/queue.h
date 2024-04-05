@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #ifndef QUEUE_H
 #define QUEUE_H
 
@@ -15,5 +17,8 @@ extern void *queue_deq(queue q);
 
 /* return a true value if and only if the queue is empty */
 extern int queue_empty(queue q);
+
+/* return the size of the current queue */
+extern size_t get_queue_size(queue q);
 
 #endif

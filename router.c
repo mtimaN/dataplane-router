@@ -159,7 +159,6 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	struct iphdr *ip_hdr = (struct iphdr *)((char *)eth_hdr + sizeof(*eth_hdr));
 	uint32_t my_ip;
 	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
-	char debug_string[16];
 
 	uint16_t check = ntohs(ip_hdr->check);
 	ip_hdr->check = 0;
@@ -238,8 +237,6 @@ void receive_ip_packet(struct ether_header *eth_hdr, int interface, size_t len)
 
 		memcpy(eth_hdr->ether_dhost, dest_mac->mac, sizeof(dest_mac->mac));
 
-		inet_ntop(AF_INET, &best_route->next_hop, debug_string, sizeof(debug_string));
-		printf("Sending to %s\n", debug_string);
 		send_to_link(best_route->interface, (char *)eth_hdr, len);
 	}
 }
@@ -251,13 +248,6 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 	inet_pton(AF_INET, get_interface_ip(interface), &my_ip);
 
 	if (ntohs(arp_hdr->op) == 1 && arp_hdr->tpa == my_ip) {
-		char debug_string[16];
-		uint32_t debug_int = ntohs(arp_hdr->tpa);
-		inet_ntop(AF_INET, &my_ip, debug_string, sizeof(debug_string));
-		printf("My ip: %s\n", debug_string);
-		inet_ntop(AF_INET, &arp_hdr->tpa, debug_string, sizeof(debug_string));
-		printf("Target: %s\n", debug_string);
-		printf("Op: %d\n", ntohs(arp_hdr->op));
 		// REQUEST
 		printf("Request received\n");
 		memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_dhost));
@@ -274,28 +264,25 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		send_to_link(interface, (char *)eth_hdr, len);
 	} else if (ntohs(arp_hdr->op) == 2) {
 		// REPLY
-
-		char debug_string[16];
 		if (queue_empty(arp_queue)) {
 			// DROP packet
-			printf("Empty q, dropped packet\n");
+			printf("Unwanted reply\n");
 			return;
 		}
 
-		printf("q NOT EMPTY\n");
+		size_t max_it = get_queue_size(arp_queue);
 		struct arp_queue_entry *entry = queue_deq(arp_queue);
 		struct route_table_entry *next_route = entry->next_route;
+		size_t i = 0;
 
-		int i = 0;
-
-		while (++i < 10 && next_route->next_hop != arp_hdr->spa) {
+		while (++i <= max_it && next_route->next_hop != arp_hdr->spa) {
 			queue_enq(arp_queue, entry);
 			entry = queue_deq(arp_queue);
 			next_route = entry->next_route;
 		}
 
-		if (i == 10) {
-			printf("Invalid ARP reply\n");
+		if (i > max_it) {
+			printf("Unwanted reply\n");
 			queue_enq(arp_queue, entry);
 			return;
 		}
@@ -311,7 +298,7 @@ void receive_arp_packet(struct ether_header *eth_hdr, int interface, size_t len)
 		free(entry->buffer);
 		free(entry);
 	} else {
-		printf("received redundant arp\n");
+		printf("Received redundant arp request\n");
 	}
 }
 
